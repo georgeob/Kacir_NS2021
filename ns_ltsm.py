@@ -1,125 +1,150 @@
 import os
-import pandas as pd
 import numpy as np
-import random
-from sklearn import preprocessing
-from collections import deque
+import tensorflow as tf
+from tensorflow import keras
+import pandas as pd
+import seaborn as sns
+from pylab import rcParams
+import matplotlib.pyplot as plt
+from matplotlib import rc
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.layers import Bidirectional, Dropout, Activation, Dense, LSTM
+from tensorflow.python.keras.layers import CuDNNLSTM
+from tensorflow.keras.models import Sequential
 
-SEQ_LEN = 60 # dlzka sekvencie
-FUTURE_PERIOD_PREDICT = 3 # kolko minut dopredu chceme predikovat rast/klesanie
-PAIR_TO_PREDICT = 'LTC-USD' # kryptomena ktorej rast chceme predikovat
-
-# klasifikacna funkcia pre rast/klesanie ceny
-def classify(current, future):
-    if float(future) > float(current):
-        return 1
-    else:
-        return 0
-
-# Preprocesing a sekvencie
-def preprocess_df(df):
-    df = df.drop( f"{PAIR_TO_PREDICT}_future", 1 ) # odstranenie future stlpca - sluzil len pre vytvorenie target stlpca
-
-    for col in df.columns:
-        if col != f"{PAIR_TO_PREDICT}_target":
-            df[col] = df[col].pct_change() # normalizacia hodnot na percenta
-            df.dropna(inplace=True) # remove the nas created by pct_change
-            df[col] = preprocessing.scale(df[col].values) # skalovanie medzi 0 a 1
-    
-    df.dropna(inplace=True) # pri normalizacii mohly vzniknut prazdne hodnoty
-
-    sequential_data = []  # list pre ukladanie sekvencnych dat
-    prev_days = deque(maxlen=SEQ_LEN)  # sekvencie
-
-    # print(df.values)
-
-    for i in df.values:  # iterovanie riadkami
-        prev_days.append([n for n in i[:-1]])  # store all but the target
-        if len(prev_days) == SEQ_LEN:  # make sure we have 60 sequences!
-            sequential_data.append([np.array(prev_days), i[-1]])  # append feature and labels sequences
-
-    random.shuffle(sequential_data)  # pomiesanie dat
-
-    buys = []  # sekvencia nakupovacich - buy hodnot
-    sells = []  # sekvencia predavacich - sel hodnot
-
-    for seq, target in sequential_data:  # iterovanie sekvencnymi datami
-        if target == 0: 
-            sells.append([seq, target])
-        elif target == 1:
-            buys.append([seq, target]) 
-
-    random.shuffle(buys)
-    random.shuffle(sells)
-
-    # balancovanie buy/sell hodnot
-    lower = min(len(buys), len(sells)) 
-    buys = buys[:lower]
-    sells = sells[:lower]
-
-    sequential_data = buys+sells  # spojenie do sekvencie
-    random.shuffle(sequential_data)
-
-    X = []
-    y = []
-
-    for seq, target in sequential_data:
-        X.append(seq)  # sekvencia
-        y.append(target)  # nazvy - buy/sell
-
-    return np.array(X), y
+CRYPTO_TO_PREDICT = 'Bitcoin'
+RANDOM_SEED = 42
+DROPOUT = 0.2
+SEQ_LEN = 100
+BATCH_SIZE = 64
+WINDOW_SIZE = SEQ_LEN - 1
+EPOCHS = 50
 
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)), )
 
-data_folder = os.path.join(__location__, 'crypto_data') # priecinok s datasetmi
+crypto_dataset = os.path.join(__location__, f'crypto_data/coin_{CRYPTO_TO_PREDICT}.csv') # bitcoin dataset
 
-master_df = pd.DataFrame() # hlavny df
+sns.set(style='whitegrid', palette='muted', font_scale=1.5)
 
-pairs = ['BTC-USD', 'LTC-USD', 'ETH-USD', 'BCH-USD'] # pary ktore budeme analyzovat
+rcParams['figure.figsize'] = 14, 8
 
-for pair in pairs:
-    dataset = f"{data_folder}/{pair}.csv" # cela cesta k suboru
+np.random.seed(RANDOM_SEED)
 
-    df = pd.read_csv(dataset) # names = ["time", "low", "high", "open", "close", "volume"]
-    #print( 'Crypro pair : \n\n' , pair ,df.head())
+# normalizacia dat
+def normalize(df):
+    scaler = MinMaxScaler()
 
-    # premenovanie stlpcov
-    df.rename( columns={"Close" : f"{pair}_close", "Volume" : f"{pair}_volume"} , inplace=True )
+    close_price = df.Close.values.reshape(-1, 1)
 
-    df.set_index("Unix", inplace=True) # unix timestamp je index
+    scaled_close = scaler.fit_transform(close_price)
+    print("\nscaled_close.shape", scaled_close.shape)
 
-    df = df[ [f"{pair}_close", f"{pair}_volume"] ] # zaujma nas iba close a volume
+    #print(np.isnan(scaled_close).any())
 
-    # print(df.head())
+    scaled_close = scaled_close[~np.isnan(scaled_close)]
+    scaled_close = scaled_close.reshape(-1, 1)
 
-    # mergovanie do hlavneho datasetu
-    if len(master_df) == 0: 
-        master_df = df 
-    else:
-        master_df =  master_df.merge(df,left_index=True,right_index=True) 
+    #print(np.isnan(scaled_close).any())
 
-master_df.fillna(method="ffill", inplace=True)  # ak existuju medzery v udajoch, pouzije sa predchodzi udaj
-master_df.dropna(inplace=True) # odstranenie na hodnot
+    return scaled_close, scaler
 
-# print( master_df.head() )
+# rozdelenie na sekvencie
+def to_sequences(data, seq_len):
+    d = []
 
-master_df[f"{PAIR_TO_PREDICT}_future"] = master_df[f"{PAIR_TO_PREDICT}_close"].shift(-FUTURE_PERIOD_PREDICT) # vytorenie future stlpca na zaklade velkosti predikcie
+    for index in range(len(data) - seq_len):
+        d.append(data[index: index + seq_len])
 
-master_df[f"{PAIR_TO_PREDICT}_target"] = list(map(classify, master_df[f"{PAIR_TO_PREDICT}_close"], master_df[f"{PAIR_TO_PREDICT}_future"])) # vytvorenie target stlpca
+    return np.array(d)
 
-# print( master_df[[f"{PAIR_TO_PREDICT}_close", f"{PAIR_TO_PREDICT}_future", f"{PAIR_TO_PREDICT}_target"]].head(10) )
+# preprocessing dat
+def preprocess(data_raw, seq_len, train_split):
+    data = to_sequences(data_raw, seq_len)
 
-times = sorted(master_df.index.values)
-last_5pct = sorted(master_df.index.values)[-int(0.05*len(times))]  # poslednych 5% vsetkych dat na verifikaciu
+    num_train = int(train_split * data.shape[0])
 
-# print( last_5pct )
+    X_train = data[:num_train, :-1, :]
+    y_train = data[:num_train, -1, :]
 
-validation_master_df = master_df[(master_df.index >= last_5pct)]  # validacne data budu poslednych 5%
-master_df = master_df[(master_df.index < last_5pct)]  # odstranenie poslednych 5% ktore su vo validacii
+    X_test = data[num_train:, :-1, :]
+    y_test = data[num_train:, -1, :]
 
-train_x, train_y = preprocess_df(master_df)
-validation_x, validation_y = preprocess_df(validation_master_df)
+    return X_train, y_train, X_test, y_test
 
-print(f"Trenovacie data: {len(train_x)} Validacne data: {len(validation_x)}")
-print(f"Predaje: {train_y.count(0)}, Nakupy: {train_y.count(1)}")
-print(f"Validacia predaje: {validation_y.count(0)}, Validacia nakupy: {validation_y.count(1)}")
+df = pd.read_csv(crypto_dataset, parse_dates=['Date']) # nacitanie datasetu
+
+df = df.sort_values('Date')
+
+print( df.head() )
+
+print( "\ndf.shape" ,df.shape )
+
+# zobrazenie datasetu
+ax = df.plot(x='Date', y='Close')
+ax.set_xlabel("Date")
+ax.set_ylabel("Close Price (USD)")
+
+# normalizacia
+scaled_close, scaler = normalize(df)
+
+# preprocesing, poslednych 5% su testovacie data
+X_train, y_train, X_test, y_test = preprocess(scaled_close, SEQ_LEN, train_split = 0.95) 
+
+print( "\nX_train.shape", X_train.shape)
+
+print( "\nX_test.shape", X_test.shape)
+
+model = keras.Sequential() # sekvencny model
+
+model.add(Bidirectional(CuDNNLSTM(WINDOW_SIZE, return_sequences=True), input_shape=(WINDOW_SIZE, X_train.shape[-1]))) # pridanie LSTM, tanh je aktivacna funkcia pre CuDNNLSTM
+model.add(Dropout(rate=DROPOUT))
+
+model.add(Bidirectional(CuDNNLSTM((WINDOW_SIZE * 2), return_sequences=True)))
+model.add(Dropout(rate=DROPOUT))
+
+model.add(Bidirectional(CuDNNLSTM(WINDOW_SIZE, return_sequences=False)))
+
+model.add(Dense(units=1)) # 1 vystup , predikcia ceny
+
+model.add(Activation('linear')) # linearna aktivacna funkcia pre vystupnu vrstvu
+
+# komplilacia modelu
+model.compile(
+    loss='mean_squared_error',
+    optimizer='adam'
+)
+
+# trenovanie
+history = model.fit(
+    X_train, 
+    y_train, 
+    epochs=EPOCHS, 
+    batch_size=BATCH_SIZE, 
+    shuffle=False,
+    validation_split=0.1
+)
+
+model.evaluate(X_test, y_test)
+
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.title('model loss')
+plt.ylabel('loss')
+plt.xlabel('epoch')
+plt.legend(['train', 'test'], loc='upper left')
+plt.show()
+
+y_hat = model.predict(X_test)
+
+y_test_inverse = scaler.inverse_transform(y_test)
+y_hat_inverse = scaler.inverse_transform(y_hat)
+ 
+plt.plot(y_test_inverse, label="Realna Cena", color='green')
+plt.plot(y_hat_inverse, label="Predpovedana Cena", color='red')
+ 
+plt.title(f'{CRYPTO_TO_PREDICT} - predikcia ceny')
+plt.xlabel('Cas [den]')
+plt.ylabel('Cena')
+plt.legend(loc='best')
+
+plt.show()
