@@ -88,7 +88,8 @@ print( "\ndf.shape" ,df.shape )
 # zobrazenie datasetu
 ax = df.plot(x='Date', y='Close')
 ax.set_xlabel("Date")
-ax.set_ylabel("Close Price (USD)")
+ax.set_ylabel(f" {CRYPTO_TO_PREDICT} - Close Price (USD)")
+plt.show()
 
 # normalizacia
 scaled_close, scaler = normalize(df)
@@ -136,13 +137,13 @@ history = model.fit(
 
 model.evaluate(X_test, y_test)
 
-# plt.plot(history.history['loss'])
-# plt.plot(history.history['val_loss'])
-# plt.title('model loss')
-# plt.ylabel('loss')
-# plt.xlabel('epoch')
-# plt.legend(['train', 'test'], loc='upper left')
-# plt.show()
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.title('Chyby')
+plt.ylabel('loss')
+plt.xlabel('epoch')
+plt.legend(['train', 'test'], loc='upper left')
+plt.show()
 
 # print( '\nhistory keys:', history.history.keys())
 
