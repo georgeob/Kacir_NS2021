@@ -1,16 +1,18 @@
 import os
+import time
 import numpy as np
 import tensorflow as tf
-from tensorflow import keras
 import pandas as pd
 import seaborn as sns
-from pylab import rcParams
 import matplotlib.pyplot as plt
+from tensorflow import keras
+from pylab import rcParams
 from matplotlib import rc
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.layers import Bidirectional, Dropout, Activation, Dense, LSTM
 from tensorflow.python.keras.layers import CuDNNLSTM
 from tensorflow.keras.models import Sequential
+from tensorflow.keras.callbacks import TensorBoard
 
 CRYPTO_TO_PREDICT = 'Bitcoin'
 RANDOM_SEED = 42
@@ -19,10 +21,14 @@ SEQ_LEN = 100
 BATCH_SIZE = 64
 WINDOW_SIZE = SEQ_LEN - 1
 EPOCHS = 50
+NAME = f'{int(time.time())}_{SEQ_LEN}__{CRYPTO_TO_PREDICT}_model'
 
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)), )
 
+# dataset https://www.kaggle.com/sudalairajkumar/cryptocurrencypricehistory
 crypto_dataset = os.path.join(__location__, f'crypto_data/coin_{CRYPTO_TO_PREDICT}.csv') # bitcoin dataset
+logs_folder = os.path.join(__location__, 'logs')
+models_folder = os.path.join(__location__, 'models')
 
 sns.set(style='whitegrid', palette='muted', font_scale=1.5)
 
@@ -94,9 +100,10 @@ print( "\nX_train.shape", X_train.shape)
 
 print( "\nX_test.shape", X_test.shape)
 
+# vytvorenie modelu
 model = keras.Sequential() # sekvencny model
 
-model.add(Bidirectional(CuDNNLSTM(WINDOW_SIZE, return_sequences=True), input_shape=(WINDOW_SIZE, X_train.shape[-1]))) # pridanie LSTM, tanh je aktivacna funkcia pre CuDNNLSTM
+model.add(Bidirectional(CuDNNLSTM(WINDOW_SIZE, return_sequences=True), input_shape=(WINDOW_SIZE, X_train.shape[-1]))) # pridanie LSTM, 'tanh' je aktivacna funkcia pre CuDNNLSTM
 model.add(Dropout(rate=DROPOUT))
 
 model.add(Bidirectional(CuDNNLSTM((WINDOW_SIZE * 2), return_sequences=True)))
@@ -104,8 +111,8 @@ model.add(Dropout(rate=DROPOUT))
 
 model.add(Bidirectional(CuDNNLSTM(WINDOW_SIZE, return_sequences=False)))
 
+# vystupna vrstva
 model.add(Dense(units=1)) # 1 vystup , predikcia ceny
-
 model.add(Activation('linear')) # linearna aktivacna funkcia pre vystupnu vrstvu
 
 # komplilacia modelu
@@ -114,26 +121,32 @@ model.compile(
     optimizer='adam'
 )
 
+tensorboard = TensorBoard(log_dir= f"{logs_folder}/{NAME}" ) # sledovanie modelu v realnom case, tensorboard --logdir=logs/
+
 # trenovanie
 history = model.fit(
-    X_train, 
-    y_train, 
+    X_train,
+    y_train,
     epochs=EPOCHS, 
-    batch_size=BATCH_SIZE, 
+    batch_size=BATCH_SIZE,
     shuffle=False,
-    validation_split=0.1
+    validation_split=0.1,
+    callbacks=[tensorboard]
 )
 
 model.evaluate(X_test, y_test)
 
-plt.plot(history.history['loss'])
-plt.plot(history.history['val_loss'])
-plt.title('model loss')
-plt.ylabel('loss')
-plt.xlabel('epoch')
-plt.legend(['train', 'test'], loc='upper left')
-plt.show()
+# plt.plot(history.history['loss'])
+# plt.plot(history.history['val_loss'])
+# plt.title('model loss')
+# plt.ylabel('loss')
+# plt.xlabel('epoch')
+# plt.legend(['train', 'test'], loc='upper left')
+# plt.show()
 
+# print( '\nhistory keys:', history.history.keys())
+
+# predikcia
 y_hat = model.predict(X_test)
 
 y_test_inverse = scaler.inverse_transform(y_test)
